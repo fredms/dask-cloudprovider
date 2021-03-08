@@ -16,7 +16,6 @@ try:
     from azureml.core import Experiment, RunConfiguration, ScriptRunConfig
     from azureml.core.compute import AmlCompute, ComputeTarget
     from azureml.core.compute_target import ComputeTargetException
-    from azureml.train.estimator import Estimator
     from azureml.core.runconfig import MpiConfiguration
 except ImportError as e:
     msg = (
@@ -621,19 +620,20 @@ class AzureMLCluster(Cluster):
     async def __create_cluster(self):
         self.__print_message("Setting up cluster")
         exp = Experiment(self.workspace, self.experiment_name)
-        estimator = Estimator(
-            os.path.join(self.abs_path, "setup"),
-            compute_target=self.compute_target,
-            entry_script="start_scheduler.py",
-            environment_definition=self.environment_definition,
-            script_params=self.scheduler_params,
-            node_count=1,  ### start only scheduler
-            distributed_training=MpiConfiguration(),
-            use_docker=True,
-            inputs=self.datastores,
-        )
+        args=[]
+        for key in self.scheduler_params:
+            args.append(key)
+            args.append(self.scheduler_params.get(key))
 
-        run = exp.submit(estimator, tags=self.tags)
+        script_config = ScriptRunConfig(
+            source_directory=os.path.join(self.abs_path, "setup"),
+            script="start_scheduler.py",
+            arguments=args,
+            compute_target=self.compute_target,
+            environment=self.environment_definition
+        )
+        ## TODO: mount datastores
+        run = exp.submit(script_config, tags=self.tags)
 
         self.__print_message("Waiting for scheduler node's IP")
         status = run.get_status()
@@ -1017,10 +1017,6 @@ class AzureMLCluster(Cluster):
     # scale up
     def scale_up(self, workers=1):
         """Scale up the number of workers."""
-        run_config = RunConfiguration()
-        run_config.target = self.compute_target
-        run_config.environment = self.environment_definition
-
         scheduler_ip = self.run.get_metrics()["scheduler"]
         args = [
             f"--scheduler_ip_port={scheduler_ip}",
@@ -1032,8 +1028,9 @@ class AzureMLCluster(Cluster):
         child_run_config = ScriptRunConfig(
             source_directory=os.path.join(self.abs_path, "setup"),
             script="start_worker.py",
-            arguments=args,
-            run_config=run_config,
+            compute_target=self.compute_target,
+            environment=self.environment_definition,
+            arguments=args
         )
 
         for i in range(workers):
